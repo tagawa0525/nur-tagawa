@@ -1,35 +1,32 @@
 { lib
 , stdenv
 , fetchurl
-, makeWrapper
+, coreutils
+, gnugrep
+, copyDesktopItems
+, makeDesktopItem
 , autoPatchelfHook
-, wrapGAppsHook3
+, buildPackages
 , alsa-lib
 , at-spi2-atk
-, cairo
-, cups
-, dbus
-, expat
 , fontconfig
-, freetype
-, gdk-pixbuf
 , glib
-, gtk3
-, libdrm
-, libnotify
-, libpulseaudio
+, libdbusmenu
 , libsecret
-, libuuid
-, libxkbcommon
-, mesa
+, libXScrnSaver
+, libxshmfence
+, libglvnd
 , nspr
 , nss
-, pango
 , systemd
+, wayland
 , xorg
 , libkrb5
 , webkitgtk_4_1
-, libsoup_3
+, imagemagick
+, asar
+, bash
+, ripgrep
 }:
 
 let
@@ -46,6 +43,13 @@ let
   version = "1.108.1";
   sha256 = "1dsvrf384qy3jfkwgkc7l0z3kyk17gw3v0rcb2gkx832k64n32x9";
 
+  executableName = "code";
+  longName = "Visual Studio Code";
+  shortName = "Code";
+  iconName = "vscode";
+  libraryName = "vscode";
+
+  systemdLibs = lib.getLib systemd;
 in
 stdenv.mkDerivation rec {
   pname = "vscode";
@@ -57,65 +61,142 @@ stdenv.mkDerivation rec {
     inherit sha256;
   };
 
+  desktopItems = [
+    (makeDesktopItem {
+      name = executableName;
+      desktopName = longName;
+      comment = "Code Editing. Redefined.";
+      genericName = "Text Editor";
+      exec = "${executableName} %F";
+      icon = iconName;
+      startupNotify = true;
+      startupWMClass = shortName;
+      categories = [
+        "Utility"
+        "TextEditor"
+        "Development"
+        "IDE"
+      ];
+      keywords = [ "vscode" ];
+      actions.new-empty-window = {
+        name = "New Empty Window";
+        exec = "${executableName} --new-window %F";
+        icon = iconName;
+      };
+    })
+    (makeDesktopItem {
+      name = executableName + "-url-handler";
+      desktopName = longName + " - URL Handler";
+      comment = "Code Editing. Redefined.";
+      genericName = "Text Editor";
+      exec = executableName + " --open-url %U";
+      icon = iconName;
+      startupNotify = true;
+      startupWMClass = shortName;
+      categories = [
+        "Utility"
+        "TextEditor"
+        "Development"
+        "IDE"
+      ];
+      mimeTypes = [ "x-scheme-handler/${iconName}" ];
+      keywords = [ "vscode" ];
+      noDisplay = true;
+    })
+  ];
+
   nativeBuildInputs = [
-    makeWrapper
+    imagemagick
     autoPatchelfHook
-    wrapGAppsHook3
+    asar
+    copyDesktopItems
+    # override doesn't preserve splicing https://github.com/NixOS/nixpkgs/issues/132651
+    (buildPackages.wrapGAppsHook3.override { makeWrapper = buildPackages.makeShellWrapper; })
   ];
 
   buildInputs = [
+    libsecret
+    libXScrnSaver
+    libxshmfence
     alsa-lib
     at-spi2-atk
-    cairo
-    cups
-    dbus
-    expat
-    fontconfig
-    freetype
-    gdk-pixbuf
-    glib
-    gtk3
-    libdrm
-    libnotify
-    libpulseaudio
-    libsecret
-    libuuid
-    libxkbcommon
-    mesa
-    nspr
-    nss
-    pango
-    stdenv.cc.cc.lib
-    systemd
-    xorg.libX11
-    xorg.libXcomposite
-    xorg.libXdamage
-    xorg.libXext
-    xorg.libXfixes
-    xorg.libXrandr
-    xorg.libxcb
-    xorg.libxkbfile
-    xorg.libxshmfence
     libkrb5
+    nss
+    nspr
+    systemdLibs
     webkitgtk_4_1
-    libsoup_3
+    xorg.libxkbfile
   ];
 
   runtimeDependencies = [
-    (lib.getLib systemd)
+    systemdLibs
+    fontconfig.lib
+    libdbusmenu
+    wayland
+    libsecret
   ];
 
   dontBuild = true;
   dontConfigure = true;
 
+  # Fix "Save as Root" functionality
+  postPatch = ''
+    packed="resources/app/node_modules.asar"
+    unpacked="resources/app/node_modules"
+    asar extract "$packed" "$unpacked"
+    substituteInPlace $unpacked/@vscode/sudo-prompt/index.js \
+      --replace-fail "/usr/bin/pkexec" "/run/wrappers/bin/pkexec" \
+      --replace-fail "/bin/bash" "${bash}/bin/bash"
+    rm -rf "$packed"
+    ln -rs "$unpacked" "$packed"
+
+    # Use nixpkgs ripgrep instead of bundled one
+    chmod +x resources/app/node_modules/@vscode/ripgrep/bin/rg
+    rm resources/app/node_modules/@vscode/ripgrep/bin/rg
+    ln -s ${ripgrep}/bin/rg resources/app/node_modules/@vscode/ripgrep/bin/rg
+  '';
+
   installPhase = ''
     runHook preInstall
 
-    mkdir -p $out/lib/vscode $out/bin
-    cp -r ./* $out/lib/vscode
-    ln -s $out/lib/vscode/bin/code $out/bin/code
+    mkdir -p "$out/lib/${libraryName}" "$out/bin"
+    cp -r ./* "$out/lib/${libraryName}"
+    ln -s "$out/lib/${libraryName}/bin/${executableName}" "$out/bin/${executableName}"
+
+    # Install icons
+    mkdir -p "$out/share/pixmaps"
+    icon_file="$out/lib/${libraryName}/resources/app/resources/linux/code.png"
+    cp "$icon_file" "$out/share/pixmaps/${iconName}.png"
+
+    # Dynamically determine size of icon and place in appropriate directory
+    size=$(identify -format "%wx%h" "$icon_file")
+    mkdir -p "$out/share/icons/hicolor/$size/apps"
+    cp "$icon_file" "$out/share/icons/hicolor/$size/apps/${iconName}.png"
+
+    # Override the previously determined VSCODE_PATH with the one we know to be correct
+    sed -i "/ELECTRON=/iVSCODE_PATH='$out/lib/${libraryName}'" "$out/bin/${executableName}"
+    grep -q "VSCODE_PATH='$out/lib/${libraryName}'" "$out/bin/${executableName}" # check if sed succeeded
+
+    # Remove native encryption code
+    rm -rf $out/lib/${libraryName}/resources/app/node_modules/vscode-encrypt
 
     runHook postInstall
+  '';
+
+  preFixup = ''
+    gappsWrapperArgs+=(
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libdbusmenu ]}
+      --prefix PATH : ${lib.makeBinPath [ glib gnugrep coreutils ]}
+      --add-flags "\''${NIXOS_OZONE_WL:+\''${WAYLAND_DISPLAY:+--ozone-platform-hint=auto --enable-features=WaylandWindowDecorations --enable-wayland-ime=true --wayland-text-input-version=3}}"
+    )
+  '';
+
+  postFixup = ''
+    patchelf \
+      --add-needed ${libglvnd}/lib/libGLESv2.so.2 \
+      --add-needed ${libglvnd}/lib/libGL.so.1 \
+      --add-needed ${libglvnd}/lib/libEGL.so.1 \
+      $out/lib/${libraryName}/${executableName}
   '';
 
   meta = with lib; {
