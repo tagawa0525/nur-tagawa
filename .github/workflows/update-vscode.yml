@@ -6,6 +6,9 @@ on:
     - cron: '30 22 * * *'
   workflow_dispatch: # 手動実行も可能
 
+permissions:
+  contents: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -92,6 +95,10 @@ jobs:
         id: build
         continue-on-error: true
         run: |
+          # ビルドテストを実行する理由:
+          # 1. Microsoft APIから取得したSHA256ハッシュが正しいことを検証
+          # 2. Nixパッケージ定義の構文エラーや依存関係の問題を早期発見
+          # 3. 壊れたパッケージがコミットされることを防ぐ
           nix-build -A vscode --arg pkgs 'import <nixpkgs> { config.allowUnfree = true; }' 2>&1 | tee build.log
 
       - name: Check build result
