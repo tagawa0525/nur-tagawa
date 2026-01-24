@@ -13,5 +13,4 @@
 
   # パッケージ
   vscode = pkgs.callPackage ./pkgs/vscode { };
-  vscode-extensions = import ./pkgs/vscode-extensions { inherit pkgs; };
 }
