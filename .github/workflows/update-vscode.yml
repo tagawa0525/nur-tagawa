@@ -1,4 +1,4 @@
-name: Update VSCode
+name: Update VSCode and Extensions
 
 on:
   schedule:
@@ -84,11 +84,50 @@ jobs:
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "SHA256 (base32): $SHA256"
 
+      - name: Get latest extension versions
+        id: extensions
+        run: |
+          # VS Code Speech Language Pack (ja-jp)の最新版を取得
+          RESPONSE=$(curl -fsSL -X POST \
+            'https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery' \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json;api-version=3.0-preview.1' \
+            -d '{
+              "filters": [{
+                "criteria": [
+                  {"filterType": 7, "value": "ms-vscode.vscode-speech-language-pack-ja-jp"}
+                ]
+              }],
+              "flags": 914
+            }')
+
+          VERSION=$(echo "$RESPONSE" | jq -r '.results[0].extensions[0].versions[0].version')
+          echo "speech_ja_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Latest Speech Language Pack (ja-jp): $VERSION"
+
+          # SHA256ハッシュを計算
+          URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/vscode-speech-language-pack-ja-jp/${VERSION}/vspackage"
+          TEMP_FILE=$(mktemp)
+          curl -fsSL "$URL" -o "$TEMP_FILE"
+          SHA256=$(nix-hash --type sha256 --flat --sri "$TEMP_FILE")
+          rm "$TEMP_FILE"
+
+          echo "speech_ja_sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "SHA256: $SHA256"
+
       - name: Update version in default.nix
         if: steps.compare.outputs.comparison == '-1'
         run: |
           sed -i 's/version = ".*";/version = "${{ steps.vscode.outputs.version }}";/' pkgs/vscode/default.nix
           sed -i 's/sha256 = ".*";/sha256 = "${{ steps.hash.outputs.sha256 }}";/' pkgs/vscode/default.nix
+
+      - name: Update extension versions
+        run: |
+          # VS Code Speech Language Pack (ja-jp)のバージョンとハッシュを更新
+          sed -i '/vscode-speech-language-pack-ja-jp/,/sha256 =/ {
+            s/version = ".*";/version = "${{ steps.extensions.outputs.speech_ja_version }}";/
+            s/sha256 = ".*";/sha256 = "${{ steps.extensions.outputs.speech_ja_sha256 }}";/
+          }' pkgs/vscode-extensions/default.nix
 
       - name: Build package (test)
         if: steps.compare.outputs.comparison == '-1'
@@ -100,6 +139,7 @@ jobs:
           # 2. Nixパッケージ定義の構文エラーや依存関係の問題を早期発見
           # 3. 壊れたパッケージがコミットされることを防ぐ
           nix-build -A vscode --arg pkgs 'import <nixpkgs> { config.allowUnfree = true; }' 2>&1 | tee build.log
+          nix-build -A vscode-extensions --arg pkgs 'import <nixpkgs> { config.allowUnfree = true; }' 2>&1 | tee -a build.log
 
       - name: Check build result
         if: steps.compare.outputs.comparison == '-1'
@@ -119,6 +159,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pkgs/vscode/default.nix
-          git commit -m "chore: update VSCode ${{ steps.current.outputs.version }} -> ${{ steps.vscode.outputs.version }}"
+          git add pkgs/vscode/default.nix pkgs/vscode-extensions/default.nix
+
+          # コミットメッセージを生成
+          COMMIT_MSG="chore: update VSCode ${{ steps.current.outputs.version }} -> ${{ steps.vscode.outputs.version }}"
+
+          # 拡張機能も更新された場合はメッセージに追加
+          if git diff --cached pkgs/vscode-extensions/default.nix | grep -q '^+.*version'; then
+            COMMIT_MSG="${COMMIT_MSG} and extensions"
+          fi
+
+          git commit -m "$COMMIT_MSG"
           git push
