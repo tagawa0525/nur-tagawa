@@ -13,4 +13,5 @@
 
   # パッケージ
   vscode = pkgs.callPackage ./pkgs/vscode { };
+  vscode-insiders = pkgs.callPackage ./pkgs/vscode-insiders { };
 }
