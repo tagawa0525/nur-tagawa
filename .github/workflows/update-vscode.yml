@@ -1,4 +1,4 @@
-name: Update VSCode
+name: Update VSCode Stable
 
 on:
   schedule:
